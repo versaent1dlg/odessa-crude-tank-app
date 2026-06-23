@@ -318,7 +318,7 @@ with col1:
     start_g = st.number_input("Start Gauge (ft)", 0.0, 30.0, 12.5, key="start_key")
     end_g = st.number_input("End Gauge (ft)", 0.0, 30.0, 18.2, key="end_key")
 with col2:
-    bsw = st.slider("BS&W %", 0.0, 5.0, 0.7, key="bsw_key")
+    bsw = st.slider("BS&W %", 0.0, 100.0, 0.7, 0.1, key="bsw_key")
     gravity = st.number_input("Gravity (°API)", 30.0, 45.0, 37.5, key="grav_key")
     temp = st.number_input("Temperature °F", 70, 110, 88, key="temp_key")
     ticket_vol = st.number_input("Ticket Volume (bbl)", 0.0, 5000.0, 920.0, key="ticket_vol_key")
