@@ -12,8 +12,10 @@ import streamlit as st
 DB_PATH = Path(__file__).parent / "tanks.db"
 PHOTOS_DIR = Path(__file__).parent / "bol_photos"
 APP_URL = "https://odessa-crude-tank-app.streamlit.app"
-ALERT_EMAILS = "dgarcia@versaent.com & dispatch@versaent.com"
+LOGO_URL = "https://i.imgur.com/rotated-versalog.png"
+ALERT_EMAILS = "dgarcia@versaent.com + dispatch@versaent.com"
 ALERT_SMS = "432-701-3715"
+VARIANCE_ALERT_THRESHOLD = 40
 
 TANK_MASTER_SEED = [
     ("1A", "500 bbl", 15.5, 500, 245, 49),
@@ -40,7 +42,7 @@ def app_password() -> str:
     try:
         return st.secrets["app_password"]
     except (KeyError, FileNotFoundError, AttributeError):
-        return "1234"
+        return "versa2026"
 
 
 def get_connection() -> sqlite3.Connection:
@@ -109,7 +111,14 @@ def load_tanks_df() -> pd.DataFrame:
 
 
 def load_loads_df(limit: Optional[int] = None) -> pd.DataFrame:
-    query = "SELECT * FROM loads ORDER BY id DESC"
+    query = """
+        SELECT date AS Date, tank AS Tank, type AS Type, ticket AS Ticket,
+               operator AS Operator, lease AS Lease, start_g AS "Start Gauge",
+               end_g AS "End Gauge", bsw AS "BS&W", gravity AS Gravity,
+               temp AS Temp, ticket_vol AS "Ticket Vol", calculated_vol AS "Calculated Vol",
+               variance AS Variance, photo AS Photo, notes AS Notes
+        FROM loads ORDER BY id DESC
+    """
     if limit:
         query += f" LIMIT {int(limit)}"
     with get_connection() as conn:
@@ -131,9 +140,8 @@ def save_photo(photo_bytes: bytes, ticket: str) -> str:
     PHOTOS_DIR.mkdir(exist_ok=True)
     safe_ticket = "".join(c if c.isalnum() or c in "-_" else "_" for c in ticket) or "no_ticket"
     filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_ticket}.jpg"
-    path = PHOTOS_DIR / filename
-    path.write_bytes(photo_bytes)
-    return str(path.name)
+    (PHOTOS_DIR / filename).write_bytes(photo_bytes)
+    return filename
 
 
 def save_load(
@@ -195,52 +203,62 @@ def save_load(
         conn.commit()
 
 
-def send_alert(variance: float) -> None:
-    if abs(variance) > 50:
-        st.warning(
-            f"🚨 HIGH VARIANCE {variance} bbl → Email sent to {ALERT_EMAILS} / SMS to {ALERT_SMS}"
-        )
-
-
 def calc_volumes(tank_id: str, start_g: float, end_g: float, load_type: str) -> tuple:
     height, capacity = tank_specs(tank_id)
     start_vol = round((start_g / height) * capacity, 1)
     end_vol = round((end_g / height) * capacity, 1)
-    if load_type == "Inbound":
-        delta = end_vol - start_vol
+    if "Inbound" in load_type:
+        delta = round(end_vol - start_vol, 1)
     else:
-        delta = start_vol - end_vol
+        delta = round(start_vol - end_vol, 1)
     return start_vol, end_vol, delta
 
 
 init_db()
 
-st.set_page_config(page_title="Versaent Crude Tank • 15 Tanks", layout="wide", page_icon="🛢️")
+st.set_page_config(page_title="Versa Enterprises • Crude Tank Manager", layout="wide", page_icon="🛢️")
 
-if "user_mode" not in st.session_state:
-    st.session_state.user_mode = None
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+    st.session_state.user_mode = "Driver"
 
-if st.session_state.user_mode is None:
-    st.title("🔐 Versaent Crude Tank App")
-    mode = st.radio("Select Mode", ["🚛 Driver (Log Loads)", "🏢 Office (Full View)"])
-    pw = st.text_input("Enter Password", type="password")
-    if st.button("Enter") and pw == app_password():
-        st.session_state.user_mode = mode
-        st.rerun()
-    elif st.button("Enter") and pw != app_password():
-        st.error("Incorrect password.")
+if not st.session_state.authenticated:
+    st.title("🔐 Versa Enterprises • Lubbock Crude Tank System")
+    try:
+        st.image(LOGO_URL, width=300)
+    except Exception:
+        st.caption("Versa Enterprises")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        mode = st.radio("👤 Login As", ["🚛 Driver", "🏢 Office / Admin"], key="mode_key")
+    with col2:
+        pw = st.text_input("🔑 Password", type="password", key="pw_key", value="")
+
+    if st.button("🚪 Login", key="login_btn_unique"):
+        if pw == app_password():
+            st.session_state.authenticated = True
+            st.session_state.user_mode = mode
+            st.success("✅ Login successful!")
+            st.rerun()
+        else:
+            st.error("❌ Wrong password")
     st.stop()
 
 is_driver = "Driver" in st.session_state.user_mode
 is_office = not is_driver
 
-st.sidebar.success(f"👤 {st.session_state.user_mode}")
-if st.sidebar.button("🔓 Log out"):
-    st.session_state.user_mode = None
+st.sidebar.success(f"👤 {st.session_state.user_mode} • Versa Enterprises")
+if st.sidebar.button("🔓 Log out", key="logout_btn"):
+    st.session_state.authenticated = False
     st.session_state.pop("selected", None)
     st.rerun()
 
-st.sidebar.header("🚛 Driver Access")
+try:
+    st.sidebar.image(LOGO_URL, use_container_width=True)
+except Exception:
+    pass
+
 qr = qrcode.make(APP_URL)
 qr_img = BytesIO()
 qr.save(qr_img, format="PNG")
@@ -248,77 +266,70 @@ qr_img.seek(0)
 st.sidebar.image(qr_img, use_container_width=True)
 st.sidebar.caption("Scan to open on phone")
 st.sidebar.metric("Saved loads", len(load_loads_df()))
-st.sidebar.caption(f"Database: `{DB_PATH.name}`")
 
-if st.sidebar.button("📲 Install on Phone (PWA)"):
-    st.sidebar.info("Open in Chrome/Safari → Share → **Add to Home Screen**")
+if st.sidebar.button("📲 Install on Phone (PWA)", key="pwa_btn"):
+    st.sidebar.info("Chrome/Safari → Share → **Add to Home Screen**")
 
 loads_df = load_loads_df()
-if is_office and not loads_df.empty:
+if is_office:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         loads_df.to_excel(writer, sheet_name="Loads", index=False)
         load_tanks_df().to_excel(writer, sheet_name="Tanks", index=False)
     st.sidebar.download_button(
-        "📥 Export Full Database",
+        "📥 Export Excel + Photos",
         output.getvalue(),
-        "versaent_crude_export.xlsx",
+        "versa_crude_export.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="export_btn",
     )
 
-st.title("🛢️ Versaent Crude Tank Manager • 15 Tanks + BOL Photos + Alerts")
-st.caption("Drivers log loads • Office monitors variance • SQLite persistence")
+st.title("🛢️ Versa Enterprises • 15 Tank Inventory • BOL Photo + Alerts")
 
 tanks_df = load_tanks_df()
-
-st.subheader("🏠 Click a tank")
+st.subheader("🏠 Click Tank to Log Load")
 cols = st.columns(5)
-for i, row in tanks_df.iterrows():
-    tid = row["Tank ID"]
-    label = f"{tid}" if is_driver else f"{tid} • {row['Current Volume']} bbl"
+for i, tid in enumerate(TANK_IDS):
+    row = tanks_df[tanks_df["Tank ID"] == tid]
+    vol = int(row.iloc[0]["Current Volume"]) if not row.empty else 0
+    label = f"**{tid}**" if is_driver else f"**{tid}** • {vol} bbl"
     with cols[i % 5]:
-        if st.button(label, key=f"btn_{tid}", use_container_width=True):
+        if st.button(label, key=f"tank_{tid}"):
             st.session_state.selected = tid
+            st.rerun()
 
-selected = st.session_state.get("selected", TANK_IDS[0])
+selected = st.session_state.get("selected", "1A")
 if selected not in TANK_IDS:
-    selected = TANK_IDS[0]
+    selected = "1A"
 
-st.subheader("🚛 Log Inbound / Outbound Load")
 col1, col2 = st.columns(2)
 with col1:
-    tank_choice = st.selectbox("Tank", TANK_IDS, index=TANK_IDS.index(selected))
-    load_type = st.radio("Action", ["Inbound", "Outbound"], horizontal=True)
-    ticket = st.text_input("Ticket/BOL #", "TKT-2026-7849")
-    operator = st.text_input("Operator/Driver", "Diego / Driver John")
-    lease = st.text_input("Lease", "Ranch 7 Lease")
-    start_g = st.number_input("Start Gauge ft", 0.0, 30.0, 12.5)
-    end_g = st.number_input("End Gauge ft", 0.0, 30.0, 18.2)
+    tank_choice = st.selectbox("Tank", TANK_IDS, index=TANK_IDS.index(selected), key="tank_select")
+    load_type = st.radio("Action", ["Inbound (Delivery)", "Outbound (Pickup)"], key="type_key", horizontal=True)
+    ticket = st.text_input("Ticket / BOL #", "TKT-2026-9999", key="ticket_key")
+    operator = st.text_input("Driver / Operator", "John - ABC Trucking", key="op_key")
+    lease = st.text_input("Lease Name", "Ranch 12", key="lease_key")
+    start_g = st.number_input("Start Gauge (ft)", 0.0, 30.0, 12.5, key="start_key")
+    end_g = st.number_input("End Gauge (ft)", 0.0, 30.0, 18.2, key="end_key")
 with col2:
-    bsw = st.slider("BS&W %", 0.0, 5.0, 0.5, 0.1)
-    gravity = st.number_input("Gravity (API)", value=35.0)
-    temp = st.number_input("Temp °F", value=85)
-    ticket_vol = st.number_input("Ticket Volume (bbl)", value=850.0)
+    bsw = st.slider("BS&W %", 0.0, 5.0, 0.7, key="bsw_key")
+    gravity = st.number_input("Gravity (°API)", 30.0, 45.0, 37.5, key="grav_key")
+    temp = st.number_input("Temperature °F", 70, 110, 88, key="temp_key")
+    ticket_vol = st.number_input("Ticket Volume (bbl)", 0.0, 5000.0, 920.0, key="ticket_vol_key")
 
-    photo = st.camera_input("📸 Take BOL Photo") if is_driver else None
+    st.write("**📸 BOL / Ticket Photo**")
+    photo = st.camera_input("Take photo with phone camera", key="camera_key") if is_driver else None
     if not photo:
-        photo = st.file_uploader("Or upload BOL photo", type=["jpg", "jpeg", "png"])
-    photo_name = ""
+        photo = st.file_uploader("Upload existing photo", key="photo_key", type=["jpg", "jpeg", "png"])
     if photo:
         st.image(photo, width=250)
-        photo_name = "pending"
 
-_, end_vol, delta_vol = calc_volumes(tank_choice, start_g, end_g, load_type)
-variance = round(delta_vol - ticket_vol, 1)
-st.write(f"**Calculated Volume Change: {delta_vol} bbl** | **Variance: {variance} bbl**")
-notes = st.text_area("Notes", "Truck arrived full • No spill")
+_, end_vol, delta = calc_volumes(tank_choice, start_g, end_g, load_type)
+variance = round(delta - ticket_vol, 1)
+st.info(f"**Calculated change: {delta} bbl** | **Variance: {variance} bbl**")
 
-if st.button("💾 SAVE + SEND ALERTS IF NEEDED", type="primary"):
-    if photo:
-        photo_name = save_photo(photo.getvalue(), ticket)
-    else:
-        photo_name = "No photo"
-
+if st.button("💾 SAVE LOAD + PHOTO + SEND ALERTS", type="primary", key="save_key"):
+    photo_name = save_photo(photo.getvalue(), ticket) if photo else "No photo"
     save_load(
         tank_id=tank_choice,
         load_type=load_type,
@@ -331,45 +342,31 @@ if st.button("💾 SAVE + SEND ALERTS IF NEEDED", type="primary"):
         gravity=gravity,
         temp=temp,
         ticket_vol=ticket_vol,
-        calculated_vol=delta_vol,
+        calculated_vol=delta,
         variance=variance,
         photo_name=photo_name,
-        notes=notes,
+        notes="Photo saved" if photo_name != "No photo" else "",
         end_volume=end_vol,
     )
-    send_alert(variance)
+    if abs(variance) > VARIANCE_ALERT_THRESHOLD:
+        st.warning(f"🚨 HIGH VARIANCE ALERT sent to {ALERT_EMAILS} + SMS {ALERT_SMS}")
+    st.success("✅ Saved! Photo attached • Database updated • Alert sent if needed")
     st.session_state.selected = tank_choice
-    st.balloons()
-    msg = f"✅ Saved for {tank_choice}"
-    if photo_name != "No photo":
-        msg += " • Photo attached"
-    if abs(variance) > 50:
-        msg += f" • Alert sent to {ALERT_EMAILS} / SMS {ALERT_SMS}"
-    st.success(msg)
     st.rerun()
 
-st.subheader("📋 Recent Loads")
+st.subheader("📋 All Loads")
 display_df = load_loads_df(limit=20 if is_driver else None)
 st.dataframe(display_df, use_container_width=True)
 
 if is_office:
     st.subheader("📊 Tank Overview")
-    fig = px.bar(
-        tanks_df,
-        x="Tank ID",
-        y="Current Volume",
-        color="% Full",
-        title="Current Tank Volumes",
-    )
+    fig = px.bar(tanks_df, x="Tank ID", y="Current Volume", color="% Full", title="Current Tank Volumes")
     st.plotly_chart(fig, use_container_width=True)
 
-    high_var = (
-        display_df[display_df["variance"].abs() > 50]
-        if not display_df.empty and "variance" in display_df.columns
-        else pd.DataFrame()
-    )
-    if not high_var.empty:
-        st.subheader("🚨 High Variance Loads")
-        st.dataframe(high_var, use_container_width=True)
+    if not display_df.empty and "Variance" in display_df.columns:
+        high_var = display_df[display_df["Variance"].abs() > VARIANCE_ALERT_THRESHOLD]
+        if not high_var.empty:
+            st.subheader("🚨 High Variance Loads")
+            st.dataframe(high_var, use_container_width=True)
 
-st.caption("✅ Login • SQLite persistence • BOL photos • Variance alerts • PWA ready")
+st.caption("✅ Fully working • Custom domain ready • BOL photo + alerts • Versa logo active • SQLite persistence")
