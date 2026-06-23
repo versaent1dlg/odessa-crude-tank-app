@@ -12,7 +12,8 @@ import streamlit as st
 DB_PATH = Path(__file__).parent / "tanks.db"
 PHOTOS_DIR = Path(__file__).parent / "bol_photos"
 APP_URL = "https://odessa-crude-tank-app.streamlit.app"
-LOGO_URL = "https://i.imgur.com/rotated-versalog.png"
+LOGO_PATH = Path(__file__).parent / "assets" / "versalogo.svg"
+LOGO_URL = "https://versaent.com/wp-content/uploads/2023/01/versalogo.svg"
 ALERT_EMAILS = "dgarcia@versaent.com + dispatch@versaent.com"
 ALERT_SMS = "432-701-3715"
 VARIANCE_ALERT_THRESHOLD = 40
@@ -203,6 +204,17 @@ def save_load(
         conn.commit()
 
 
+def show_logo(*, width: int = 300, sidebar: bool = False) -> None:
+    target = st.sidebar if sidebar else st
+    if LOGO_PATH.exists():
+        if sidebar:
+            target.image(str(LOGO_PATH), use_container_width=True)
+        else:
+            target.image(str(LOGO_PATH), width=width)
+    else:
+        target.image(LOGO_URL, width=width if not sidebar else None, use_container_width=sidebar)
+
+
 def calc_volumes(tank_id: str, start_g: float, end_g: float, load_type: str) -> tuple:
     height, capacity = tank_specs(tank_id)
     start_vol = round((start_g / height) * capacity, 1)
@@ -224,10 +236,7 @@ if "authenticated" not in st.session_state:
 
 if not st.session_state.authenticated:
     st.title("🔐 Versa Enterprises • Lubbock Crude Tank System")
-    try:
-        st.image(LOGO_URL, width=300)
-    except Exception:
-        st.caption("Versa Enterprises")
+    show_logo(width=300)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -254,10 +263,7 @@ if st.sidebar.button("🔓 Log out", key="logout_btn"):
     st.session_state.pop("selected", None)
     st.rerun()
 
-try:
-    st.sidebar.image(LOGO_URL, use_container_width=True)
-except Exception:
-    pass
+show_logo(sidebar=True)
 
 qr = qrcode.make(APP_URL)
 qr_img = BytesIO()
