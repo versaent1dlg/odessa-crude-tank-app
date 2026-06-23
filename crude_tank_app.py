@@ -16,7 +16,7 @@ LOGO_PATH = Path(__file__).parent / "assets" / "versalogo.svg"
 LOGO_URL = "https://versaent.com/wp-content/uploads/2023/01/versalogo.svg"
 ALERT_EMAILS = "dgarcia@versaent.com + dispatch@versaent.com"
 ALERT_SMS = "432-701-3715"
-VARIANCE_ALERT_THRESHOLD = 40
+VARIANCE_ALERT_THRESHOLD = 4
 
 TANK_MASTER_SEED = [
     ("1A", "500 bbl", 15.5, 500, 245, 49),
