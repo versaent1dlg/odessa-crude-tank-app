@@ -1,3 +1,4 @@
+import html
 import sqlite3
 from datetime import datetime
 from io import BytesIO
@@ -9,6 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import qrcode
 import streamlit as st
+import streamlit.components.v1 as components
 
 DB_PATH = Path(__file__).parent / "tanks.db"
 PHOTOS_DIR = Path(__file__).parent / "bol_photos"
@@ -85,10 +87,17 @@ def init_db() -> None:
                 variance REAL,
                 photo TEXT,
                 notes TEXT,
+                driver_signature TEXT,
+                witness_name TEXT,
+                witness_signature TEXT,
                 FOREIGN KEY (tank) REFERENCES tanks(tank_id)
             );
             """
         )
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(loads)")}
+        for col in ("driver_signature", "witness_name", "witness_signature"):
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE loads ADD COLUMN {col} TEXT")
         count = conn.execute("SELECT COUNT(*) FROM tanks").fetchone()[0]
         if count == 0:
             conn.executemany(
@@ -118,7 +127,9 @@ def load_loads_df(limit: Optional[int] = None) -> pd.DataFrame:
                operator AS Operator, lease AS Lease, start_g AS "Start Gauge",
                end_g AS "End Gauge", bsw AS "BS&W", gravity AS Gravity,
                temp AS Temp, ticket_vol AS "Ticket Vol", calculated_vol AS "Calculated Vol",
-               variance AS Variance, photo AS Photo, notes AS Notes
+               variance AS Variance, photo AS Photo, notes AS Notes,
+               driver_signature AS "Driver Signature", witness_name AS "Witness Name",
+               witness_signature AS "Witness Signature"
         FROM loads ORDER BY id DESC
     """
     if limit:
@@ -164,6 +175,9 @@ def save_load(
     photo_name: str,
     notes: str,
     end_volume: float,
+    driver_signature: str,
+    witness_name: str,
+    witness_signature: str,
 ) -> None:
     with get_connection() as conn:
         conn.execute(
@@ -171,8 +185,9 @@ def save_load(
             INSERT INTO loads (
                 date, tank, type, ticket, operator, lease,
                 start_g, end_g, bsw, gravity, temp,
-                ticket_vol, calculated_vol, variance, photo, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ticket_vol, calculated_vol, variance, photo, notes,
+                driver_signature, witness_name, witness_signature
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -191,6 +206,9 @@ def save_load(
                 variance,
                 photo_name,
                 notes,
+                driver_signature,
+                witness_name,
+                witness_signature,
             ),
         )
         tank = conn.execute(
@@ -262,6 +280,85 @@ def calc_volumes(tank_id: str, start_g: float, end_g: float, load_type: str) -> 
     else:
         delta = round(start_vol - end_vol, 1)
     return start_vol, end_vol, delta
+
+
+def build_ticket_html(ticket_data: dict) -> str:
+    load_label = "DELIVERY TICKET" if "Inbound" in ticket_data["load_type"] else "PICKUP TICKET"
+    rows = [
+        ("Ticket / BOL #", ticket_data["ticket"]),
+        ("Date / Time", ticket_data["date"]),
+        ("Tank", ticket_data["tank_id"]),
+        ("Movement", ticket_data["load_type"]),
+        ("Lease", ticket_data["lease"]),
+        ("Operator / Driver", ticket_data["operator"]),
+        ("Start Gauge", f"{ticket_data['start_g']:.1f} ft ({ticket_data['start_pct']:.1f}%)"),
+        ("End Gauge", f"{ticket_data['end_g']:.1f} ft ({ticket_data['end_pct']:.1f}%)"),
+        ("Ticket Volume", f"{ticket_data['ticket_vol']:.1f} bbl"),
+        ("Calculated Change", f"{ticket_data['calculated_vol']:.1f} bbl"),
+        ("Variance", f"{ticket_data['variance']:.1f} bbl"),
+        ("BS&W", f"{ticket_data['bsw']:.1f}%"),
+        ("Gravity", f"{ticket_data['gravity']:.1f} °API"),
+        ("Temperature", f"{ticket_data['temp']:.0f} °F"),
+        ("Tank Capacity", f"{ticket_data['capacity_bbl']:.0f} bbl"),
+        ("Available After", f"{ticket_data['end_available']:.0f} bbl"),
+    ]
+    body_rows = "".join(
+        f"<tr><td class='label'>{html.escape(k)}</td><td>{html.escape(str(v))}</td></tr>"
+        for k, v in rows
+    )
+    driver_sig = ticket_data.get("driver_signature") or ""
+    witness_name = ticket_data.get("witness_name") or ""
+    witness_sig = ticket_data.get("witness_signature") or ""
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{html.escape(ticket_data['ticket'])} — Versa Ticket</title>
+  <style>
+    @page {{ margin: 0.6in; }}
+    body {{ font-family: Arial, sans-serif; color: #1F4E79; margin: 24px; }}
+    h1 {{ margin: 0 0 4px 0; font-size: 24px; }}
+    h2 {{ margin: 0 0 18px 0; font-size: 16px; color: #C8860A; }}
+    .header {{ border-bottom: 3px solid #1F4E79; padding-bottom: 12px; margin-bottom: 18px; }}
+    table {{ width: 100%; border-collapse: collapse; margin-bottom: 24px; }}
+    td {{ border: 1px solid #ccc; padding: 8px 10px; font-size: 13px; }}
+    td.label {{ width: 34%; font-weight: bold; background: #E8EDF2; }}
+    .signatures {{ display: flex; gap: 24px; margin-top: 28px; }}
+    .sig-box {{ flex: 1; }}
+    .sig-line {{ border-bottom: 2px solid #1F4E79; min-height: 42px; margin: 28px 0 8px 0; font-style: italic; }}
+    .sig-label {{ font-size: 12px; font-weight: bold; }}
+    .footer {{ margin-top: 24px; font-size: 11px; color: #666; }}
+    @media print {{
+      button {{ display: none; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Versa Enterprises</h1>
+    <h2>Lubbock Crude Tank — {load_label}</h2>
+  </div>
+  <table>{body_rows}</table>
+  <div class="signatures">
+    <div class="sig-box">
+      <div class="sig-label">Driver / Operator Signature</div>
+      <div class="sig-line">{html.escape(driver_sig)}</div>
+      <div>Name: {html.escape(ticket_data['operator'])}</div>
+    </div>
+    <div class="sig-box">
+      <div class="sig-label">Witness Signature</div>
+      <div class="sig-line">{html.escape(witness_sig)}</div>
+      <div>Name: {html.escape(witness_name)}</div>
+    </div>
+  </div>
+  <div class="footer">
+    Printed {html.escape(datetime.now().strftime('%Y-%m-%d %H:%M'))} •
+    Manual gauge verification required • Retain signed copy on file
+  </div>
+  <script>window.onload = function() {{ if (window.location.search.includes('autoprint=1')) window.print(); }};</script>
+</body>
+</html>"""
 
 
 def render_tank_diagram(level: dict, tank_id: str, capacity_bbl: float, height_ft: float, title: str) -> go.Figure:
@@ -454,6 +551,65 @@ if abs(variance) > VARIANCE_ALERT_THRESHOLD:
         f"Estimated level may differ from book by {abs(variance):.1f} bbl."
     )
 
+st.subheader("✍️ Signatures (required for printed ticket)")
+sig1, sig2, sig3 = st.columns(3)
+with sig1:
+    driver_signature = st.text_input("Driver Signature (type full name)", key="driver_sig_key")
+with sig2:
+    witness_name = st.text_input("Witness Name", key="witness_name_key")
+with sig3:
+    witness_signature = st.text_input("Witness Signature (type full name)", key="witness_sig_key")
+
+ticket_payload = {
+    "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    "ticket": ticket,
+    "tank_id": tank_choice,
+    "load_type": load_type,
+    "lease": lease,
+    "operator": operator,
+    "start_g": start_g,
+    "end_g": end_g,
+    "start_pct": start_level["pct"],
+    "end_pct": end_level["pct"],
+    "ticket_vol": ticket_vol,
+    "calculated_vol": delta,
+    "variance": variance,
+    "bsw": bsw,
+    "gravity": gravity,
+    "temp": temp,
+    "capacity_bbl": tank_info["capacity_bbl"],
+    "end_available": end_level["available_bbl"],
+    "driver_signature": driver_signature,
+    "witness_name": witness_name,
+    "witness_signature": witness_signature,
+}
+ticket_html = build_ticket_html(ticket_payload)
+
+print_col1, print_col2 = st.columns(2)
+with print_col1:
+    st.download_button(
+        "🖨️ Download Printable Ticket (HTML)",
+        ticket_html,
+        file_name=f"{ticket.replace('/', '-')}_{tank_choice}_ticket.html",
+        mime="text/html",
+        key="download_ticket_btn",
+    )
+with print_col2:
+    if st.button("🖨️ Open Print Preview", key="print_preview_btn"):
+        st.session_state.print_ticket_html = ticket_html
+
+if st.session_state.get("print_ticket_html"):
+    with st.expander("Print Preview — use browser Print (Ctrl/Cmd+P)", expanded=True):
+        components.html(st.session_state.print_ticket_html, height=720, scrolling=True)
+        if st.button("Print Now", key="print_now_btn"):
+            components.html(
+                st.session_state.print_ticket_html.replace(
+                    "</body>",
+                    "<script>window.print();</script></body>",
+                ),
+                height=0,
+            )
+
 if st.button("💾 SAVE LOAD + PHOTO + SEND ALERTS", type="primary", key="save_key"):
     photo_name = save_photo(photo.getvalue(), ticket) if photo else "No photo"
     save_load(
@@ -473,6 +629,9 @@ if st.button("💾 SAVE LOAD + PHOTO + SEND ALERTS", type="primary", key="save_k
         photo_name=photo_name,
         notes="Photo saved" if photo_name != "No photo" else "",
         end_volume=end_vol,
+        driver_signature=driver_signature,
+        witness_name=witness_name,
+        witness_signature=witness_signature,
     )
     if abs(variance) > VARIANCE_ALERT_THRESHOLD:
         st.warning(f"🚨 HIGH VARIANCE ALERT sent to {ALERT_EMAILS} + SMS {ALERT_SMS}")
