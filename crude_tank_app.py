@@ -6,6 +6,7 @@ from typing import Optional
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import qrcode
 import streamlit as st
 
@@ -215,6 +216,43 @@ def show_logo(*, width: int = 300, sidebar: bool = False) -> None:
         target.image(LOGO_URL, width=width if not sidebar else None, use_container_width=sidebar)
 
 
+def get_tank_row(tank_id: str) -> dict:
+    row = load_tanks_df()
+    match = row[row["Tank ID"] == tank_id]
+    if match.empty:
+        height, capacity = tank_specs(tank_id)
+        return {
+            "tank_id": tank_id,
+            "height_ft": height,
+            "capacity_bbl": capacity,
+            "current_volume": 0.0,
+            "pct_full": 0.0,
+            "available_bbl": capacity,
+        }
+    r = match.iloc[0]
+    capacity = float(r["Capacity bbl"])
+    current = float(r["Current Volume"])
+    return {
+        "tank_id": tank_id,
+        "height_ft": float(r["Height ft"]),
+        "capacity_bbl": capacity,
+        "current_volume": current,
+        "pct_full": float(r["% Full"]),
+        "available_bbl": round(capacity - current, 1),
+    }
+
+
+def level_from_gauge(gauge_ft: float, height_ft: float, capacity_bbl: float) -> dict:
+    pct = round((gauge_ft / height_ft) * 100, 1) if height_ft else 0.0
+    volume_bbl = round((gauge_ft / height_ft) * capacity_bbl, 1) if height_ft else 0.0
+    return {
+        "gauge_ft": gauge_ft,
+        "pct": min(pct, 100.0),
+        "volume_bbl": volume_bbl,
+        "available_bbl": round(max(capacity_bbl - volume_bbl, 0), 1),
+    }
+
+
 def calc_volumes(tank_id: str, start_g: float, end_g: float, load_type: str) -> tuple:
     height, capacity = tank_specs(tank_id)
     start_vol = round((start_g / height) * capacity, 1)
@@ -224,6 +262,46 @@ def calc_volumes(tank_id: str, start_g: float, end_g: float, load_type: str) -> 
     else:
         delta = round(start_vol - end_vol, 1)
     return start_vol, end_vol, delta
+
+
+def render_tank_diagram(level: dict, tank_id: str, capacity_bbl: float, height_ft: float, title: str) -> go.Figure:
+    pct = min(max(level["pct"], 0), 100)
+    fig = go.Figure()
+    fig.add_shape(type="rect", x0=0.32, y0=0.02, x1=0.68, y1=0.98, line=dict(color="#1F4E79", width=3), fillcolor="#E8EDF2")
+    if pct > 0:
+        fig.add_shape(
+            type="rect",
+            x0=0.34,
+            y0=0.02,
+            x1=0.66,
+            y1=0.02 + (0.96 * pct / 100),
+            fillcolor="#C8860A",
+            line_width=0,
+        )
+    fig.add_annotation(
+        x=0.5,
+        y=0.5,
+        text=(
+            f"<b>{title}</b><br>"
+            f"Tank {tank_id}<br>"
+            f"{pct:.1f}% full<br>"
+            f"{level['gauge_ft']:.1f} / {height_ft:.1f} ft<br>"
+            f"{level['volume_bbl']:.0f} / {capacity_bbl:.0f} bbl<br>"
+            f"{level['available_bbl']:.0f} bbl avail"
+        ),
+        showarrow=False,
+        font=dict(size=13, color="#1F4E79"),
+    )
+    fig.update_xaxes(visible=False, range=[0, 1])
+    fig.update_yaxes(visible=False, range=[0, 1])
+    fig.update_layout(
+        height=320,
+        margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        title=dict(text=f"{title} • {pct:.1f}%", x=0.5, font=dict(size=14)),
+    )
+    return fig
 
 
 init_db()
@@ -296,9 +374,11 @@ tanks_df = load_tanks_df()
 st.subheader("🏠 Click Tank to Log Load")
 cols = st.columns(5)
 for i, tid in enumerate(TANK_IDS):
-    row = tanks_df[tanks_df["Tank ID"] == tid]
-    vol = int(row.iloc[0]["Current Volume"]) if not row.empty else 0
-    label = f"**{tid}**" if is_driver else f"**{tid}** • {vol} bbl"
+    info = get_tank_row(tid)
+    if is_driver:
+        label = f"**{tid}** • {info['pct_full']:.0f}% • {info['available_bbl']:.0f} avail"
+    else:
+        label = f"**{tid}** • {info['current_volume']:.0f}/{info['capacity_bbl']:.0f} bbl"
     with cols[i % 5]:
         if st.button(label, key=f"tank_{tid}"):
             st.session_state.selected = tid
@@ -330,9 +410,49 @@ with col2:
     if photo:
         st.image(photo, width=250)
 
+tank_info = get_tank_row(tank_choice)
+st.subheader(f"📊 Tank {tank_choice} — Capacity & Availability")
+cap_col1, cap_col2, cap_col3, cap_col4, cap_col5 = st.columns(5)
+cap_col1.metric("Capacity", f"{tank_info['capacity_bbl']:.0f} bbl")
+cap_col2.metric("Book Level", f"{tank_info['current_volume']:.0f} bbl", f"{tank_info['pct_full']:.1f}%")
+cap_col3.metric("Available Space", f"{tank_info['available_bbl']:.0f} bbl")
+cap_col4.metric("Max Height", f"{tank_info['height_ft']:.1f} ft")
+tank_type_row = tanks_df[tanks_df["Tank ID"] == tank_choice]
+cap_col5.metric("Type", tank_type_row.iloc[0]["Type"] if not tank_type_row.empty else "—")
+
 _, end_vol, delta = calc_volumes(tank_choice, start_g, end_g, load_type)
 variance = round(delta - ticket_vol, 1)
-st.info(f"**Calculated change: {delta} bbl** | **Variance: {variance} bbl**")
+start_level = level_from_gauge(start_g, tank_info["height_ft"], tank_info["capacity_bbl"])
+end_level = level_from_gauge(end_g, tank_info["height_ft"], tank_info["capacity_bbl"])
+
+st.subheader("🛢️ Gauge-Based Level Estimate")
+est1, est2, est3, est4 = st.columns(4)
+est1.metric("Start Gauge", f"{start_level['gauge_ft']:.1f} ft", f"{start_level['pct']:.1f}%")
+est2.metric("Start Volume", f"{start_level['volume_bbl']:.0f} bbl")
+est3.metric("End Gauge", f"{end_level['gauge_ft']:.1f} ft", f"{end_level['pct']:.1f}%")
+est4.metric("End Available", f"{end_level['available_bbl']:.0f} bbl", f"{end_level['volume_bbl']:.0f} bbl in tank")
+
+vis1, vis2 = st.columns(2)
+with vis1:
+    st.plotly_chart(
+        render_tank_diagram(start_level, tank_choice, tank_info["capacity_bbl"], tank_info["height_ft"], "Before (Start Gauge)"),
+        use_container_width=True,
+    )
+with vis2:
+    st.plotly_chart(
+        render_tank_diagram(end_level, tank_choice, tank_info["capacity_bbl"], tank_info["height_ft"], "After (End Gauge)"),
+        use_container_width=True,
+    )
+
+st.info(
+    f"**Calculated change: {delta} bbl** | **Variance: {variance} bbl** | "
+    f"**Est. end level: {end_level['pct']:.1f}% ({end_level['gauge_ft']:.1f} ft)**"
+)
+if abs(variance) > VARIANCE_ALERT_THRESHOLD:
+    st.warning(
+        f"Variance exceeds {VARIANCE_ALERT_THRESHOLD} bbl — review gauge vs ticket. "
+        f"Estimated level may differ from book by {abs(variance):.1f} bbl."
+    )
 
 if st.button("💾 SAVE LOAD + PHOTO + SEND ALERTS", type="primary", key="save_key"):
     photo_name = save_photo(photo.getvalue(), ticket) if photo else "No photo"
