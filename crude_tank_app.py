@@ -337,7 +337,7 @@ def build_ticket_html(ticket_data: dict) -> str:
 <body>
   <div class="header">
     <h1>Versa Enterprises</h1>
-    <h2>Lubbock Crude Tank — {load_label}</h2>
+    <h2>Odessa Crude Tank — {load_label}</h2>
   </div>
   <table>{body_rows}</table>
   <div class="signatures">
@@ -410,7 +410,7 @@ if "authenticated" not in st.session_state:
     st.session_state.user_mode = "Driver"
 
 if not st.session_state.authenticated:
-    st.title("🔐 Versa Enterprises • Lubbock Crude Tank System")
+    st.title("🔐 Versa Enterprises • Odessa Crude Tank System")
     show_logo(width=300)
 
     col1, col2 = st.columns(2)
