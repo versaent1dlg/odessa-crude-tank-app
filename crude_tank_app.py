@@ -483,14 +483,20 @@ if not st.session_state.authenticated:
     st.title("🔐 Versa Enterprises • Odessa Crude Tank System")
     show_logo(width=300)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        mode = st.radio("👤 Login As", ["🚛 Driver", "🏢 Office / Admin"], key="mode_key")
-    with col2:
-        pw = st.text_input("🔑 Password", type="password", key="pw_key", value="")
+    mode = st.radio("👤 Login As", ["🚛 Driver", "🏢 Office / Admin"], key="mode_key", horizontal=True)
+    is_driver_login = "Driver" in mode
 
-    if st.button("🚪 Login", key="login_btn_unique"):
-        if pw == app_password():
+    if is_driver_login:
+        st.info("Drivers can enter without a password.")
+    else:
+        pw = st.text_input("🔑 Password (Office / Admin only)", type="password", key="pw_key", value="")
+
+    if st.button("🚪 Enter" if is_driver_login else "🚪 Login", key="login_btn_unique"):
+        if is_driver_login:
+            st.session_state.authenticated = True
+            st.session_state.user_mode = mode
+            st.rerun()
+        elif pw == app_password():
             st.session_state.authenticated = True
             st.session_state.user_mode = mode
             st.success("✅ Login successful!")
