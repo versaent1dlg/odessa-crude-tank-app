@@ -15,6 +15,7 @@ import streamlit.components.v1 as components
 DB_PATH = Path(__file__).parent / "tanks.db"
 PHOTOS_DIR = Path(__file__).parent / "bol_photos"
 APP_URL = "https://odessa-crude-tank-app.streamlit.app"
+DRIVER_APP_URL = f"{APP_URL}/?driver=1"
 LOGO_PATH = Path(__file__).parent / "assets" / "versalogo.svg"
 LOGO_URL = "https://versaent.com/wp-content/uploads/2023/01/versalogo.svg"
 ALERT_EMAILS = "dgarcia@versaent.com + dispatch@versaent.com"
@@ -480,6 +481,11 @@ if "authenticated" not in st.session_state:
     st.session_state.user_mode = "Driver"
 
 if not st.session_state.authenticated:
+    if st.query_params.get("driver") == "1":
+        st.session_state.authenticated = True
+        st.session_state.user_mode = "🚛 Driver"
+        st.rerun()
+
     st.title("🔐 Versa Enterprises • Odessa Crude Tank System")
     show_logo(width=300)
 
@@ -516,7 +522,7 @@ if st.sidebar.button("🔓 Log out", key="logout_btn"):
 
 show_logo(sidebar=True)
 
-qr = qrcode.make(APP_URL)
+qr = qrcode.make(DRIVER_APP_URL)
 qr_img = BytesIO()
 qr.save(qr_img, format="PNG")
 qr_img.seek(0)
