@@ -95,7 +95,7 @@ def init_db() -> None:
             """
         )
         existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(loads)")}
-        for col in ("driver_signature", "witness_name", "witness_signature"):
+        for col in ("driver_signature", "witness_name", "witness_signature", "rrc_number", "api_number"):
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE loads ADD COLUMN {col} TEXT")
         count = conn.execute("SELECT COUNT(*) FROM tanks").fetchone()[0]
@@ -124,7 +124,8 @@ def load_tanks_df() -> pd.DataFrame:
 def load_loads_df(limit: Optional[int] = None) -> pd.DataFrame:
     query = """
         SELECT date AS Date, tank AS Tank, type AS Type, ticket AS Ticket,
-               operator AS Operator, lease AS Lease, start_g AS "Start Gauge",
+               operator AS Operator, lease AS Lease, rrc_number AS "RRC #",
+               api_number AS "API #", start_g AS "Start Gauge",
                end_g AS "End Gauge", bsw AS "BS&W", gravity AS Gravity,
                temp AS Temp, ticket_vol AS "Ticket Vol", calculated_vol AS "Calculated Vol",
                variance AS Variance, photo AS Photo, notes AS Notes,
@@ -157,6 +158,52 @@ def save_photo(photo_bytes: bytes, ticket: str) -> str:
     return filename
 
 
+def validate_load_form(
+    *,
+    ticket: str,
+    operator: str,
+    lease: str,
+    rrc_number: str,
+    api_number: str,
+    start_g: float,
+    end_g: float,
+    max_height_ft: float,
+    ticket_vol: float,
+    photo,
+    driver_signature: str,
+    witness_name: str,
+    witness_signature: str,
+) -> list:
+    errors = []
+    if not ticket.strip():
+        errors.append("Ticket / BOL # is required")
+    if not operator.strip():
+        errors.append("Driver / Operator is required")
+    if not lease.strip():
+        errors.append("Lease Name is required")
+    if not rrc_number.strip():
+        errors.append("RRC # is required")
+    if not api_number.strip():
+        errors.append("API # is required")
+    if start_g > max_height_ft:
+        errors.append(f"Start gauge exceeds tank max height ({format_gauge_ft_in(max_height_ft)})")
+    if end_g > max_height_ft:
+        errors.append(f"End gauge exceeds tank max height ({format_gauge_ft_in(max_height_ft)})")
+    if start_g == end_g:
+        errors.append("Start and End gauge must differ")
+    if ticket_vol <= 0:
+        errors.append("Ticket Volume must be greater than 0 bbl")
+    if not photo:
+        errors.append("BOL / Ticket photo is required")
+    if not driver_signature.strip():
+        errors.append("Driver Signature is required")
+    if not witness_name.strip():
+        errors.append("Witness Name is required")
+    if not witness_signature.strip():
+        errors.append("Witness Signature is required")
+    return errors
+
+
 def save_load(
     *,
     tank_id: str,
@@ -164,6 +211,8 @@ def save_load(
     ticket: str,
     operator: str,
     lease: str,
+    rrc_number: str,
+    api_number: str,
     start_g: float,
     end_g: float,
     bsw: float,
@@ -183,11 +232,11 @@ def save_load(
         conn.execute(
             """
             INSERT INTO loads (
-                date, tank, type, ticket, operator, lease,
+                date, tank, type, ticket, operator, lease, rrc_number, api_number,
                 start_g, end_g, bsw, gravity, temp,
                 ticket_vol, calculated_vol, variance, photo, notes,
                 driver_signature, witness_name, witness_signature
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -196,6 +245,8 @@ def save_load(
                 ticket,
                 operator,
                 lease,
+                rrc_number,
+                api_number,
                 start_g,
                 end_g,
                 bsw,
@@ -260,6 +311,23 @@ def get_tank_row(tank_id: str) -> dict:
     }
 
 
+def gauge_ft_in_to_decimal(feet: int, inches: float) -> float:
+    inches = max(0.0, min(inches, 11.75))
+    return round(feet + inches / 12.0, 3)
+
+
+def format_gauge_ft_in(gauge_ft: float) -> str:
+    if gauge_ft is None or pd.isna(gauge_ft):
+        return "—"
+    feet = int(gauge_ft)
+    inches = round((gauge_ft - feet) * 12, 2)
+    if inches >= 12:
+        feet += int(inches // 12)
+        inches = round(inches % 12, 2)
+    in_str = str(int(inches)) if inches == int(inches) else f"{inches:.1f}"
+    return f"{feet} ft {in_str} in"
+
+
 def level_from_gauge(gauge_ft: float, height_ft: float, capacity_bbl: float) -> dict:
     pct = round((gauge_ft / height_ft) * 100, 1) if height_ft else 0.0
     volume_bbl = round((gauge_ft / height_ft) * capacity_bbl, 1) if height_ft else 0.0
@@ -290,9 +358,11 @@ def build_ticket_html(ticket_data: dict) -> str:
         ("Tank", ticket_data["tank_id"]),
         ("Movement", ticket_data["load_type"]),
         ("Lease", ticket_data["lease"]),
+        ("RRC #", ticket_data["rrc_number"]),
+        ("API #", ticket_data["api_number"]),
         ("Operator / Driver", ticket_data["operator"]),
-        ("Start Gauge", f"{ticket_data['start_g']:.1f} ft ({ticket_data['start_pct']:.1f}%)"),
-        ("End Gauge", f"{ticket_data['end_g']:.1f} ft ({ticket_data['end_pct']:.1f}%)"),
+        ("Start Gauge", f"{format_gauge_ft_in(ticket_data['start_g'])} ({ticket_data['start_pct']:.1f}%)"),
+        ("End Gauge", f"{format_gauge_ft_in(ticket_data['end_g'])} ({ticket_data['end_pct']:.1f}%)"),
         ("Ticket Volume", f"{ticket_data['ticket_vol']:.1f} bbl"),
         ("Calculated Change", f"{ticket_data['calculated_vol']:.1f} bbl"),
         ("Variance", f"{ticket_data['variance']:.1f} bbl"),
@@ -382,7 +452,7 @@ def render_tank_diagram(level: dict, tank_id: str, capacity_bbl: float, height_f
             f"<b>{title}</b><br>"
             f"Tank {tank_id}<br>"
             f"{pct:.1f}% full<br>"
-            f"{level['gauge_ft']:.1f} / {height_ft:.1f} ft<br>"
+            f"{format_gauge_ft_in(level['gauge_ft'])} / {format_gauge_ft_in(height_ft)}<br>"
             f"{level['volume_bbl']:.0f} / {capacity_bbl:.0f} bbl<br>"
             f"{level['available_bbl']:.0f} bbl avail"
         ),
@@ -489,18 +559,33 @@ col1, col2 = st.columns(2)
 with col1:
     tank_choice = st.selectbox("Tank", TANK_IDS, index=TANK_IDS.index(selected), key="tank_select")
     load_type = st.radio("Action", ["Inbound (Delivery)", "Outbound (Pickup)"], key="type_key", horizontal=True)
-    ticket = st.text_input("Ticket / BOL #", "TKT-2026-9999", key="ticket_key")
-    operator = st.text_input("Driver / Operator", "John - ABC Trucking", key="op_key")
-    lease = st.text_input("Lease Name", "Ranch 12", key="lease_key")
-    start_g = st.number_input("Start Gauge (ft)", 0.0, 30.0, 12.5, key="start_key")
-    end_g = st.number_input("End Gauge (ft)", 0.0, 30.0, 18.2, key="end_key")
+    ticket = st.text_input("Ticket / BOL # *", "", key="ticket_key", placeholder="Required")
+    operator = st.text_input("Driver / Operator *", "", key="op_key", placeholder="Required")
+    lease = st.text_input("Lease Name *", "", key="lease_key", placeholder="Required")
+    rrc_number = st.text_input("RRC # *", "", key="rrc_key", placeholder="e.g. 12345678")
+    api_number = st.text_input("API # *", "", key="api_key", placeholder="e.g. 42-123-45678-00-00")
+    max_gauge_ft = int(tank_specs(tank_choice)[0])
+    st.markdown("**Start Gauge ***")
+    start_ft_col, start_in_col = st.columns(2)
+    with start_ft_col:
+        start_ft = st.number_input("Feet", 0, max_gauge_ft, 0, 1, key="start_ft_key")
+    with start_in_col:
+        start_in = st.number_input("Inches", 0.0, 11.75, 0.0, 0.25, key="start_in_key")
+    start_g = gauge_ft_in_to_decimal(start_ft, start_in)
+    st.markdown("**End Gauge ***")
+    end_ft_col, end_in_col = st.columns(2)
+    with end_ft_col:
+        end_ft = st.number_input("Feet", 0, max_gauge_ft, 0, 1, key="end_ft_key")
+    with end_in_col:
+        end_in = st.number_input("Inches", 0.0, 11.75, 0.0, 0.25, key="end_in_key")
+    end_g = gauge_ft_in_to_decimal(end_ft, end_in)
 with col2:
-    bsw = st.slider("BS&W %", 0.0, 100.0, 0.7, 0.1, key="bsw_key")
-    gravity = st.number_input("Gravity (°API)", 30.0, 45.0, 37.5, key="grav_key")
-    temp = st.number_input("Temperature °F", 70, 110, 88, key="temp_key")
-    ticket_vol = st.number_input("Ticket Volume (bbl)", 0.0, 5000.0, 920.0, key="ticket_vol_key")
+    bsw = st.slider("BS&W % *", 0.0, 100.0, 0.0, 0.1, key="bsw_key")
+    gravity = st.number_input("Gravity (°API) *", 0.0, 60.0, 0.0, key="grav_key")
+    temp = st.number_input("Temperature °F *", 0, 150, 0, key="temp_key")
+    ticket_vol = st.number_input("Ticket Volume (bbl) *", 0.0, 5000.0, 0.0, key="ticket_vol_key")
 
-    st.write("**📸 BOL / Ticket Photo**")
+    st.write("**📸 BOL / Ticket Photo ***")
     photo = st.camera_input("Take photo with phone camera", key="camera_key") if is_driver else None
     if not photo:
         photo = st.file_uploader("Upload existing photo", key="photo_key", type=["jpg", "jpeg", "png"])
@@ -513,7 +598,7 @@ cap_col1, cap_col2, cap_col3, cap_col4, cap_col5 = st.columns(5)
 cap_col1.metric("Capacity", f"{tank_info['capacity_bbl']:.0f} bbl")
 cap_col2.metric("Book Level", f"{tank_info['current_volume']:.0f} bbl", f"{tank_info['pct_full']:.1f}%")
 cap_col3.metric("Available Space", f"{tank_info['available_bbl']:.0f} bbl")
-cap_col4.metric("Max Height", f"{tank_info['height_ft']:.1f} ft")
+cap_col4.metric("Max Height", format_gauge_ft_in(tank_info["height_ft"]))
 tank_type_row = tanks_df[tanks_df["Tank ID"] == tank_choice]
 cap_col5.metric("Type", tank_type_row.iloc[0]["Type"] if not tank_type_row.empty else "—")
 
@@ -524,9 +609,9 @@ end_level = level_from_gauge(end_g, tank_info["height_ft"], tank_info["capacity_
 
 st.subheader("🛢️ Gauge-Based Level Estimate")
 est1, est2, est3, est4 = st.columns(4)
-est1.metric("Start Gauge", f"{start_level['gauge_ft']:.1f} ft", f"{start_level['pct']:.1f}%")
+est1.metric("Start Gauge", format_gauge_ft_in(start_level["gauge_ft"]), f"{start_level['pct']:.1f}%")
 est2.metric("Start Volume", f"{start_level['volume_bbl']:.0f} bbl")
-est3.metric("End Gauge", f"{end_level['gauge_ft']:.1f} ft", f"{end_level['pct']:.1f}%")
+est3.metric("End Gauge", format_gauge_ft_in(end_level["gauge_ft"]), f"{end_level['pct']:.1f}%")
 est4.metric("End Available", f"{end_level['available_bbl']:.0f} bbl", f"{end_level['volume_bbl']:.0f} bbl in tank")
 
 vis1, vis2 = st.columns(2)
@@ -543,7 +628,7 @@ with vis2:
 
 st.info(
     f"**Calculated change: {delta} bbl** | **Variance: {variance} bbl** | "
-    f"**Est. end level: {end_level['pct']:.1f}% ({end_level['gauge_ft']:.1f} ft)**"
+    f"**Est. end level: {end_level['pct']:.1f}% ({format_gauge_ft_in(end_level['gauge_ft'])})**"
 )
 if abs(variance) > VARIANCE_ALERT_THRESHOLD:
     st.warning(
@@ -551,14 +636,31 @@ if abs(variance) > VARIANCE_ALERT_THRESHOLD:
         f"Estimated level may differ from book by {abs(variance):.1f} bbl."
     )
 
-st.subheader("✍️ Signatures (required for printed ticket)")
+st.subheader("✍️ Signatures *")
 sig1, sig2, sig3 = st.columns(3)
 with sig1:
-    driver_signature = st.text_input("Driver Signature (type full name)", key="driver_sig_key")
+    driver_signature = st.text_input("Driver Signature (type full name) *", "", key="driver_sig_key", placeholder="Required")
 with sig2:
-    witness_name = st.text_input("Witness Name", key="witness_name_key")
+    witness_name = st.text_input("Witness Name *", "", key="witness_name_key", placeholder="Required")
 with sig3:
-    witness_signature = st.text_input("Witness Signature (type full name)", key="witness_sig_key")
+    witness_signature = st.text_input("Witness Signature (type full name) *", "", key="witness_sig_key", placeholder="Required")
+
+form_errors = validate_load_form(
+    ticket=ticket,
+    operator=operator,
+    lease=lease,
+    rrc_number=rrc_number,
+    api_number=api_number,
+    start_g=start_g,
+    end_g=end_g,
+    max_height_ft=tank_info["height_ft"],
+    ticket_vol=ticket_vol,
+    photo=photo,
+    driver_signature=driver_signature,
+    witness_name=witness_name,
+    witness_signature=witness_signature,
+)
+form_complete = not form_errors
 
 ticket_payload = {
     "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -566,6 +668,8 @@ ticket_payload = {
     "tank_id": tank_choice,
     "load_type": load_type,
     "lease": lease,
+    "rrc_number": rrc_number,
+    "api_number": api_number,
     "operator": operator,
     "start_g": start_g,
     "end_g": end_g,
@@ -585,17 +689,21 @@ ticket_payload = {
 }
 ticket_html = build_ticket_html(ticket_payload)
 
+if form_errors:
+    st.error("Complete all required fields (*) before saving or printing:\n- " + "\n- ".join(form_errors))
+
 print_col1, print_col2 = st.columns(2)
 with print_col1:
     st.download_button(
         "🖨️ Download Printable Ticket (HTML)",
         ticket_html,
-        file_name=f"{ticket.replace('/', '-')}_{tank_choice}_ticket.html",
+        file_name=f"{ticket.replace('/', '-') or 'ticket'}_{tank_choice}_ticket.html",
         mime="text/html",
         key="download_ticket_btn",
+        disabled=not form_complete,
     )
 with print_col2:
-    if st.button("🖨️ Open Print Preview", key="print_preview_btn"):
+    if st.button("🖨️ Open Print Preview", key="print_preview_btn", disabled=not form_complete):
         st.session_state.print_ticket_html = ticket_html
 
 if st.session_state.get("print_ticket_html"):
@@ -610,37 +718,46 @@ if st.session_state.get("print_ticket_html"):
                 height=0,
             )
 
-if st.button("💾 SAVE LOAD + PHOTO + SEND ALERTS", type="primary", key="save_key"):
-    photo_name = save_photo(photo.getvalue(), ticket) if photo else "No photo"
-    save_load(
-        tank_id=tank_choice,
-        load_type=load_type,
-        ticket=ticket,
-        operator=operator,
-        lease=lease,
-        start_g=start_g,
-        end_g=end_g,
-        bsw=bsw,
-        gravity=gravity,
-        temp=temp,
-        ticket_vol=ticket_vol,
-        calculated_vol=delta,
-        variance=variance,
-        photo_name=photo_name,
-        notes="Photo saved" if photo_name != "No photo" else "",
-        end_volume=end_vol,
-        driver_signature=driver_signature,
-        witness_name=witness_name,
-        witness_signature=witness_signature,
-    )
-    if abs(variance) > VARIANCE_ALERT_THRESHOLD:
-        st.warning(f"🚨 HIGH VARIANCE ALERT sent to {ALERT_EMAILS} + SMS {ALERT_SMS}")
-    st.success("✅ Saved! Photo attached • Database updated • Alert sent if needed")
-    st.session_state.selected = tank_choice
-    st.rerun()
+if st.button("💾 SAVE LOAD + PHOTO + SEND ALERTS", type="primary", key="save_key", disabled=not form_complete):
+    if form_errors:
+        st.error("Cannot save — complete all required fields.")
+    else:
+        photo_name = save_photo(photo.getvalue(), ticket)
+        save_load(
+            tank_id=tank_choice,
+            load_type=load_type,
+            ticket=ticket,
+            operator=operator,
+            lease=lease,
+            rrc_number=rrc_number,
+            api_number=api_number,
+            start_g=start_g,
+            end_g=end_g,
+            bsw=bsw,
+            gravity=gravity,
+            temp=temp,
+            ticket_vol=ticket_vol,
+            calculated_vol=delta,
+            variance=variance,
+            photo_name=photo_name,
+            notes="Photo saved",
+            end_volume=end_vol,
+            driver_signature=driver_signature,
+            witness_name=witness_name,
+            witness_signature=witness_signature,
+        )
+        if abs(variance) > VARIANCE_ALERT_THRESHOLD:
+            st.warning(f"🚨 HIGH VARIANCE ALERT sent to {ALERT_EMAILS} + SMS {ALERT_SMS}")
+        st.success("✅ Saved! Photo attached • Database updated • Alert sent if needed")
+        st.session_state.selected = tank_choice
+        st.rerun()
 
 st.subheader("📋 All Loads")
 display_df = load_loads_df(limit=20 if is_driver else None)
+if not display_df.empty:
+    for gauge_col in ("Start Gauge", "End Gauge"):
+        if gauge_col in display_df.columns:
+            display_df[gauge_col] = display_df[gauge_col].apply(format_gauge_ft_in)
 st.dataframe(display_df, use_container_width=True)
 
 if is_office:
